@@ -156,9 +156,11 @@ if (weight_col %in% names(data)) {
 }
 
 # Socio-demographics for M3 / M4. Two-category fields coded 0/1 or 1/2 become
-# an indicator for raw code 1 (raw code 2 / 0 = reference). The meaning of the
-# raw codes must be checked in the course codebook before interpretation.
-# Missing values get a separate "unknown" indicator.
+# an indicator for raw code 1 (raw code 2 / 0 = reference). Missing values get
+# a separate "unknown" indicator. Checked against the MZMV person table:
+#   male:       raw 1 = woman (gesl 2), raw 2 = man (gesl 1)
+#               -> male_model = 1 for WOMEN despite the variable name
+#   pt_pass_ga: raw 1 = GA holder (f41600_01a = 1), raw 0 = no GA / no answer
 prepare_binary <- function(x, field) {
   if (is.logical(x)) x <- as.integer(x)
   raw <- suppressWarnings(as.numeric(as.character(x)))
@@ -467,6 +469,24 @@ shares <- data.frame(
   predicted_share = colSums(P_test * w_test) / sum(w_test))
 write_csv(shares, file.path(out_dir, "test_mode_shares.csv"))
 
+# figure: observed vs predicted mode shares in the test set
+p_shares <- shares |>
+  pivot_longer(c(observed_share, predicted_share), names_to = "type", values_to = "share") |>
+  mutate(mode = factor(mode, levels = alternatives, labels = c("Car", "PT", "Bicycle", "Walking")),
+         type = factor(type, levels = c("observed_share", "predicted_share"),
+                       labels = c("Observed", "Predicted (M2)"))) |>
+  ggplot(aes(mode, share, fill = type)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_text(aes(label = scales::percent(share, accuracy = 0.1)),
+            position = position_dodge(width = 0.8), vjust = -0.3, size = 3) +
+  scale_y_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.08))) +
+  scale_fill_manual(values = c("#2a78d6", "#eb6834"), name = NULL) +
+  labs(x = NULL, y = "Share of trips (WP-weighted)",
+       title = "Observed and predicted mode shares in the test sample") +
+  theme_minimal(base_size = 11) + theme(legend.position = "bottom")
+ggsave(file.path(out_dir, "fig_test_mode_shares.png"), p_shares,
+       width = 16, height = 10, units = "cm", dpi = 300, bg = "white")
+
 
 ##### ---- 4) Calculate the value of travel time (VTT)  #####
 # time in min, cost in CHF -> VTT [CHF/h] = 60 * b_time / b_cost
@@ -774,6 +794,32 @@ apply_mode_shares <- function(pair_threshold, suffix) {
 }
 modal_split_main <- apply_mode_shares(OD_MIN_PAIR_N, "min5")             # main result
 modal_split_sens <- apply_mode_shares(1L, "min1_sensitivity")           # sensitivity
+
+# figure: source of the mode probabilities, weighted by gravity-model demand
+coverage_all <- bind_rows(
+  read_csv(file.path(od_out_dir, "probability_coverage_min5.csv"), show_col_types = FALSE) |>
+    mutate(scenario = "Min. 5 observations (main)"),
+  read_csv(file.path(od_out_dir, "probability_coverage_min1_sensitivity.csv"), show_col_types = FALSE) |>
+    mutate(scenario = "Min. 1 observation (sensitivity)")) |>
+  mutate(probability_source = factor(probability_source,
+                                     levels = c("OD_pair", "origin", "destination", "regional"),
+                                     labels = c("Direct OD pair", "Origin-zone average",
+                                                "Destination-zone average", "Regional average")),
+         scenario = factor(scenario, levels = c("Min. 5 observations (main)",
+                                                "Min. 1 observation (sensitivity)")))
+p_cov <- ggplot(coverage_all, aes(scenario, share_gravity_trips, fill = probability_source)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = ifelse(share_gravity_trips >= 0.03,
+                               scales::percent(share_gravity_trips, accuracy = 0.1), "")),
+            position = position_stack(vjust = 0.5), size = 3, colour = "white") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("#0b3d7a", "#2a78d6", "#1baf7a", "#9aa0a6"), name = NULL, drop = FALSE) +
+  labs(x = NULL, y = "Share of gravity-model commuting demand",
+       title = "Source of the mode probabilities applied to the OD matrix") +
+  theme_minimal(base_size = 11) + theme(legend.position = "bottom") +
+  guides(fill = guide_legend(nrow = 2))
+ggsave(file.path(out_dir, "fig_od_probability_coverage.png"), p_cov,
+       width = 16, height = 11, units = "cm", dpi = 300, bg = "white")
 
 message("Finished (", if (USE_WEIGHTS) "WP-weighted" else "unweighted", "). Outputs in: ",
         normalizePath(out_dir))
